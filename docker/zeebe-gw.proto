@@ -6,7 +6,7 @@ option java_package = "io.camunda.zeebe.gateway.protocol";
 option go_package = "./;pb";
 
 // For a more complete documentation, refer to Zeebe documentation at:
-// https://docs.camunda.io/docs/reference/grpc
+// https://docs.camunda.io/docs/apis-tools/zeebe-api/gateway-service/
 
 message StreamActivatedJobsRequest {
   // the job type, as defined in the BPMN process (e.g. <zeebe:taskDefinition
@@ -52,6 +52,26 @@ message ActivateJobsResponse {
 }
 
 message ActivatedJob {
+  // Describes the kind of job.
+  enum JobKind {
+    BPMN_ELEMENT = 0;
+    EXECUTION_LISTENER = 1;
+    TASK_LISTENER = 2;
+    AD_HOC_SUB_PROCESS = 3;
+  }
+
+  // Describes the listener event type of the job.
+  enum ListenerEventType {
+    ASSIGNING = 0;
+    CANCELING = 1;
+    COMPLETING = 2;
+    CREATING = 3;
+    END = 4;
+    START = 5;
+    UNSPECIFIED = 6;
+    UPDATING = 7;
+  }
+
   // the key, a unique identifier for the job
   int64 key = 1;
   // the type of the job (should match what was requested)
@@ -83,12 +103,54 @@ message ActivatedJob {
   string variables = 13;
   // the id of the tenant that owns the job
   string tenantId = 14;
+  // Contains user task properties if the job is of kind TASK_LISTENER
+  optional UserTaskProperties userTask = 15;
+  // the kind of the job.
+  JobKind kind = 16;
+  // the listener event type of the job.
+  ListenerEventType listenerEventType = 17;
+  // the list of tags
+  repeated string tags = 18;
+}
+
+message UserTaskProperties {
+  // The action performed on the user task (e.g., "claim", "update", "complete").
+  optional string action = 1;
+
+  // The user assigned to the task.
+  optional string assignee = 2;
+
+  // The list of candidate groups for the user task.
+  repeated string candidateGroups = 3;
+
+  // The list of candidate users for the user task.
+  repeated string candidateUsers = 4;
+
+  // The list of attributes that were changed in the user task.
+  repeated string changedAttributes = 5;
+
+  // The due date of the user task in ISO 8601 format.
+  optional string dueDate = 6;
+
+  // The follow-up date of the user task in ISO 8601 format.
+  optional string followUpDate = 7;
+
+  // The key of the form associated with the user task.
+  optional int64 formKey = 8;
+
+  // The priority of the user task (0-100).
+  optional int32 priority = 9;
+
+  // The unique key identifying the user task.
+  optional int64 userTaskKey = 10;
 }
 
 message CancelProcessInstanceRequest {
   // the process instance key (as, for example, obtained from
   // CreateProcessInstanceResponse)
   int64 processInstanceKey = 1;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 2;
 }
 
 message CancelProcessInstanceResponse {
@@ -99,6 +161,68 @@ message CompleteJobRequest {
   int64 jobKey = 1;
   // a JSON document representing the variables in the current task scope
   string variables = 2;
+  // The result of the completed job as determined by the worker.
+  // This functionality is currently supported only by user task listeners.
+  optional JobResult result = 3;
+}
+
+message JobResult{
+  // Indicates whether the worker denies the work, i.e. explicitly doesn't approve it.
+  // For example, a user task listener can deny the completion of a user task by setting this flag to true.
+  // In this example, the completion of a task is represented by a job that the worker can complete as denied.
+  // As a result, the completion request is rejected and the task remains active.
+  // Defaults to false.
+  optional bool denied = 1;
+  // Attributes that were corrected by the worker.
+  // The following attributes can be corrected, additional attributes will be ignored:
+  //   * `assignee` - clear by providing an empty string
+  //   * `dueDate` - clear by providing an empty string
+  //   * `followUpDate` - clear by providing an empty string
+  //   * `candidateGroups` - clear by providing an empty list
+  //   * `candidateUsers` - clear by providing an empty list
+  //   * `priority` - minimum 0, maximum 100, default 50
+  //  Omitting any of the attributes will preserve the persisted attribute's value.
+  optional JobResultCorrections corrections = 2;
+  // The reason provided by the user task listener for denying the work.
+  optional string deniedReason = 3;
+  // Used to distinguish between different types of job results. Must be one of ["userTask", "adHocSubProcess"]. If not set, defaults to "userTask".
+  optional string type = 4;
+  // The list of elements that should be activated after the job is completed. Only relevant for ad-hoc subprocesses.
+  repeated JobResultActivateElement activateElements = 5;
+  // Indicates whether the completion condition of the job is fulfilled. Only relevant for ad-hoc subprocesses.
+  optional bool isCompletionConditionFulfilled = 6;
+  // Indicates whether active instances of the ad-hoc subprocess should be cancelled. Only relevant for ad-hoc subprocesses.
+  optional bool isCancelRemainingInstances = 7;
+}
+
+message JobResultCorrections {
+  // The assignee of the task.
+  optional string assignee = 1;
+  // The due date of the task.
+  optional string dueDate = 2;
+  // The follow-up date of the task.
+  optional string followUpDate = 3;
+  // The list of candidate users of the task.
+  optional StringList candidateUsers = 4;
+  // The list of candidate groups of the task.
+  optional StringList candidateGroups = 5;
+  // The priority of the task.
+  optional int32 priority = 6;
+}
+
+message JobResultActivateElement {
+  // The id of the element to activate
+  string elementId = 1;
+  // JSON document of variables that will be created on the scope of the activated element.
+  // It must be a JSON object, as variables will be mapped in a key-value fashion.
+  // e.g. { "a": 1, "b": 2 } will create two variables, named "a" and
+  // "b" respectively, with their associated values. [{ "a": 1, "b": 2 }] would not be a
+  // valid argument, as the root of the JSON document is an array and not an object.
+  string variables = 2;
+}
+
+message StringList {
+  repeated string values = 1;
 }
 
 message CompleteJobResponse {
@@ -122,8 +246,20 @@ message CreateProcessInstanceRequest {
   // will start at the start event. If non-empty the process instance will apply start
   // instructions after it has been created
   repeated ProcessInstanceCreationStartInstruction startInstructions = 5;
+
   // the tenant id of the process definition
   string tenantId = 6;
+
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 7;
+
+  // a list of runtime instruction that can modify the behavior of the process
+  // instance during its execution
+  // if empty (default), the process instance will be executed normally
+  repeated ProcessInstanceCreationRuntimeInstruction runtimeInstructions = 8;
+
+  // a list of tags that can be attached as meta-data to process instances
+  repeated string tags = 9;
 }
 
 message ProcessInstanceCreationStartInstruction {
@@ -139,6 +275,18 @@ message ProcessInstanceCreationStartInstruction {
   string elementId = 1;
 }
 
+message ProcessInstanceCreationRuntimeInstruction {
+  oneof instruction {
+    TerminateProcessInstanceInstruction terminate = 1;
+  }
+}
+
+message TerminateProcessInstanceInstruction {
+  // the ID of the process element after which the process instance should be
+  // terminated
+  string afterElementId = 1;
+}
+
 message CreateProcessInstanceResponse {
   // the key of the process definition which was used to create the process instance
   int64 processDefinitionKey = 1;
@@ -152,6 +300,8 @@ message CreateProcessInstanceResponse {
   int64 processInstanceKey = 4;
   // the tenant identifier of the created process instance
   string tenantId = 5;
+  // tags attached to a process instance
+  repeated string tags = 6;
 }
 
 message CreateProcessInstanceWithResultRequest {
@@ -181,6 +331,8 @@ message CreateProcessInstanceWithResultResponse {
   string variables = 5;
   // the tenant identifier of the process definition
   string tenantId = 6;
+  // tags attached to a process instance
+  repeated string tags = 7;
 }
 
 message EvaluateDecisionRequest {
@@ -229,8 +381,10 @@ message EvaluateDecisionResponse {
   string failureMessage = 10;
   // the tenant identifier of the evaluated decision
   string tenantId = 11;
-  // the unique key identifying this decision evaluation
+  // deprecated, please refer to decisionEvaluationKey
   int64 decisionInstanceKey = 12;
+  // the unique key identifying this decision evaluation
+  int64 decisionEvaluationKey = 13;
 }
 
 message EvaluatedDecision {
@@ -255,6 +409,8 @@ message EvaluatedDecision {
   repeated EvaluatedDecisionInput evaluatedInputs = 8;
   // the tenant identifier of the evaluated decision
   string tenantId = 9;
+  // the key of the decision evaluation instance
+  string decisionEvaluationInstanceKey = 10;
 }
 
 message EvaluatedDecisionInput {
@@ -481,6 +637,8 @@ message PublishMessageResponse {
 message ResolveIncidentRequest {
   // the unique ID of the incident to resolve
   int64 incidentKey = 1;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 2;
 }
 
 message ResolveIncidentResponse {
@@ -543,6 +701,8 @@ message UpdateJobRetriesRequest {
   int64 jobKey = 1;
   // the new amount of retries for the job; must be positive
   int32 retries = 2;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 3;
 }
 
 message UpdateJobRetriesResponse {
@@ -553,6 +713,8 @@ message UpdateJobTimeoutRequest {
   int64 jobKey = 1;
   // the duration of the new timeout in ms, starting from the current moment
   int64 timeout = 2;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 3;
 }
 
 message UpdateJobTimeoutResponse {
@@ -574,6 +736,8 @@ message SetVariablesRequest {
   // be unchanged, and scope 2 will now be `{ "bar" : 1, "foo" 5 }`. if local was false, however,
   // then scope 1 would be `{ "foo": 5 }`, and scope 2 would be `{ "bar" : 1 }`.
   bool local = 3;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 4;
 }
 
 message SetVariablesResponse {
@@ -589,6 +753,8 @@ message ModifyProcessInstanceRequest {
   repeated ActivateInstruction activateInstructions = 2;
   // instructions describing which elements should be terminated
   repeated TerminateInstruction terminateInstructions = 3;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 4;
 
   message ActivateInstruction {
     // the id of the element that should be activated
@@ -628,6 +794,8 @@ message MigrateProcessInstanceRequest {
   int64 processInstanceKey = 1;
   // the migration plan that defines target process and element mappings
   MigrationPlan migrationPlan = 2;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 3;
 
   message MigrationPlan {
     // the key of process definition to migrate the process instance to
@@ -652,6 +820,8 @@ message DeleteResourceRequest {
   // The key of the resource that should be deleted. This can either be the key
   // of a process definition, the key of a decision requirements definition or the key of a form.
   int64 resourceKey = 1;
+  // a reference key chosen by the user and will be part of all records resulted from this operation
+  optional uint64 operationReference = 2;
 }
 
 message DeleteResourceResponse {
@@ -934,9 +1104,12 @@ service Gateway {
       FAILED_PRECONDITION:
         - not all active elements in the given process instance are mapped to the elements in the target process definition
         - a mapping instruction changes the type of an element or event
+        - a mapping instruction changes the implementation of a task
+        - a mapping instruction detaches a boundary event from an active element
         - a mapping instruction refers to an unsupported element (i.e. some elements will be supported later on)
         - a mapping instruction refers to element in unsupported scenarios.
           (i.e. migration is not supported when process instance or target process elements contains event subscriptions)
+        - multiple mapping instructions target the same boundary event
 
       INVALID_ARGUMENT:
         - A `sourceElementId` does not refer to an element in the process instance's process definition

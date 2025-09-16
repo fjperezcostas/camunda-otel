@@ -2,20 +2,20 @@ package org.camunda.otel.interceptors;
 
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.ServerCall;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.SpanContext;
 
 import static org.camunda.otel.interceptors.OtelProps.*;
 
 import org.slf4j.MDC;
 
+import java.util.Map;
+
 
 public class OtelListener<T> extends ForwardingServerCallListener.SimpleForwardingServerCallListener<T> {
-    private final Span span;
+    private final Map<String, String> mdc;
 
-    public OtelListener(ServerCall.Listener<T> delegate, Span span) {
+    public OtelListener(ServerCall.Listener<T> delegate, Map<String, String> mdc) {
         super(delegate);
-        this.span = span;
+        this.mdc = mdc;
     }
 
     public void onMessage(T message) {
@@ -39,13 +39,14 @@ public class OtelListener<T> extends ForwardingServerCallListener.SimpleForwardi
     }
 
     private void addTracingContext(Runnable function) {
-        final SpanContext ctx = span.getSpanContext();
-        MDC.put(TRACE_ID, ctx.getTraceId());
-        MDC.put(SPAN_ID, ctx.getSpanId());
-        MDC.put(TRACE_FLAGS, ctx.getTraceFlags().toString());
+        MDC.put(VERSION, mdc.get(VERSION));
+        MDC.put(TRACE_ID, mdc.get(TRACE_ID));
+        MDC.put(SPAN_ID, mdc.get(SPAN_ID));
+        MDC.put(TRACE_FLAGS, mdc.get(TRACE_FLAGS));
         try {
             function.run();
         } finally {
+            MDC.remove(VERSION);
             MDC.remove(TRACE_ID);
             MDC.remove(SPAN_ID);
             MDC.remove(TRACE_FLAGS);
@@ -56,7 +57,7 @@ public class OtelListener<T> extends ForwardingServerCallListener.SimpleForwardi
         try {
             function.run();
         } finally {
-            span.end();
+            // do nothing
         }
     }
 
